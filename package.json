@@ -1,0 +1,1 @@
+{"name":"proxmanager","private":true,"type":"module","scripts":{"build":"node scripts/build-installer.mjs","test":"node scripts/build-installer.mjs --check && node --test tests/*.test.mjs","dev":"node scripts/build-installer.mjs && wrangler pages dev public","deploy":"node scripts/build-installer.mjs && wrangler pages deploy public"},"devDependencies":{"wrangler":"^4.0.0"}}
