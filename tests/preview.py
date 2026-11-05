@@ -29,6 +29,12 @@ class Preview(SimpleHTTPRequestHandler):
         self.wfile.write(json.dumps(data).encode())
 
     def do_POST(self):
+        if self.path == '/api/nodes':
+            self.send_response(201)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps({'id': 'preview-only', 'token': 'a' * 64}).encode())
+            return
         self.send_response(403)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()

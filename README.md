@@ -27,16 +27,16 @@ Cloudflare Access JWTs are cryptographically verified by the API, including issu
 
 ## Deploy to Cloudflare Pages
 
-Prerequisites: Node.js 22+, Python 3.11+ for tests, and a Cloudflare account with Pages, D1 and Access. You can start with the HTTPS `PROJECT.pages.dev` address assigned by Pages; no custom domain is required. No Sites hosting account is required.
+Prerequisites: Node.js 22+, Python 3.11+ for tests, and a Cloudflare account with Pages, D1 and Access. The application origin is **https://proxmanager.pages.dev**; no custom domain is required. No Sites hosting account is required.
 
 1. Install development tooling: `npm install`. Authenticate using `npx wrangler login`.
 2. Create storage: `npx wrangler d1 create proxmox-control`. Put the returned database ID in `wrangler.toml`.
 3. Run migrations: `npx wrangler d1 migrations apply proxmox-control --remote`.
 4. Set up Cloudflare Access for the dashboard hostname. For a Pages-provided address, first create the Pages project (step 7), enable its Access policy, then follow [Cloudflare's production pages.dev instructions](https://developers.cloudflare.com/pages/platform/known-issues/#enable-access-on-your-pagesdev-domain): edit the generated Access application's hostname to remove the wildcard, then re-enable the Pages access policy to protect preview subdomains separately. Confirm both production and previews are protected. Configure the identity provider, customer access policies and MFA at the provider. Set `ACCESS_TEAM` to `https://YOUR-TEAM.cloudflareaccess.com` and `ACCESS_AUD` to the **production** application's audience, in `wrangler.toml` or Pages runtime variables. The API fails closed until these are configured.
-5. The `/api/agent/*` paths must be reachable without interactive Access login. Create a more specific Access application for that path with a Bypass policy. These endpoints still require the application's per-host bearer credential. Keep the rest of the hostname behind the normal Access application. Test the path-specific configuration before installing an agent.
+5. The `/api/agent/*` paths and the public `/install.sh` download must be reachable without interactive Access login. Create narrowly scoped Access applications with Bypass policies for those paths only. The installer contains public code, not customer tokens. These endpoints still require the application's per-host bearer credential. Keep the rest of the hostname behind the normal Access application. Test the path-specific configuration before installing an agent.
 6. Provision customers and memberships using reviewed D1 SQL (below). There is no public signup or membership administration endpoint in this version.
-7. Create the Pages project with `npx wrangler pages project create proxmox-control --production-branch main`, then run `npm run deploy`. Project names must be available; if necessary, choose another and update `name` in `wrangler.toml`. The output folder is `public`; Functions are deployed from `functions`. Confirm the production D1 binding and variables in the Pages dashboard. Use its assigned HTTPS Pages address. For a custom domain later, attach and validate it in Pages **before** creating its Access application, then update the audience and each host's configured origin. Authentication must be configured for that hostname too.
-8. If using Git integration, connect this repository to Pages with build command left empty and output directory `public`. Verify bindings and variables for production separately from previews. Do not bind unprotected preview deployments to production storage.
+7. Create the Pages project with `npx wrangler pages project create proxmanager --production-branch main`, then run `npm run deploy`. If the `proxmanager` project already exists, reuse it. The output folder is `public`; Functions are deployed from `functions`. Confirm the production D1 binding and variables in the Pages dashboard. The production origin and installer URL are `https://proxmanager.pages.dev` and `https://proxmanager.pages.dev/install.sh`. For a custom domain later, attach and validate it in Pages **before** creating its Access application, then update the audience and each host's configured origin. Authentication must be configured for that hostname too.
+8. If using Git integration, connect this repository to Pages with build command `npm run build` and output directory `public`. The build embeds the current agent and service into the installer. Verify bindings and variables for production separately from previews. Do not bind unprotected preview deployments to production storage.
 9. Open the protected hostname, add a server, and follow **Agent setup**. Store the displayed token securely; it cannot be retrieved later.
 
 Example customer provisioning, using D1's dashboard SQL console or a reviewed SQL file with `npx wrangler d1 execute proxmox-control --remote --file customer.sql`:
@@ -52,17 +52,21 @@ Use unique opaque customer IDs and lowercase emails. Customer provisioning and c
 
 ## Agent installation
 
-Copy the reviewed `agent` folder onto a Proxmox VE host (Python 3.11+), then as root:
+In the dashboard, choose **Add server** and save the token shown once. In a root shell on the Proxmox host, run:
 
 ```sh
-sh agent/install.sh
-editor /etc/proxmanager/config.json
-chmod 600 /etc/proxmanager/config.json
-systemctl enable --now proxmanager
-journalctl -u proxmanager
+curl -fsSL --proto '=https' --tlsv1.2 https://proxmanager.pages.dev/install.sh | bash
 ```
 
-Use the configuration shown by the dashboard. Leave `allowed_actions` empty to monitor only. To permit maintenance, explicitly add any of `refresh-updates`, `install-updates`, `reboot`, then restart the service. Use the final HTTPS origin; redirects are rejected to avoid leaking the credential.
+Paste the token into the installer's hidden prompt. It writes root-owned configuration with mode `0600`, installs the agent and systemd service, then enables and starts it. The token is never included in the command line, URL, shell history or installer output. An interactive terminal, curl, systemd and Python 3.11+ are required. The command does not install packages or reboot the host.
+
+New installations use `https://proxmanager.pages.dev` and `allowed_actions: []`. To permit maintenance, edit `/etc/proxmanager/config.json`, explicitly add any of `refresh-updates`, `install-updates`, `reboot`, then restart `proxmanager`. Reinstallation preserves existing configuration and job receipts. It refuses to replace a running agent; wait until maintenance is complete and stop the agent before reinstalling.
+
+The public installer embeds the agent and service from the same source revision, validates the embedded payload before changing files, and requires no GitHub access or separate downloads on the host. Its hashes detect corruption; authenticity relies on HTTPS and control of the Pages deployment. Only a complete script invokes installation. It does not verify the server token against the API before starting; check the dashboard for the first heartbeat and use `journalctl -u proxmanager` for connection failures.
+
+For review before execution, download `/install.sh` to a file, inspect it and run `bash install.sh` as root. If deploying directly from GitHub, run `npm run build` as the Pages build command. For local deployment, `npm run deploy` builds the installer automatically. The generated `public/install.sh` is also committed, and tests reject a stale copy.
+
+For an offline source copy, `sh agent/install.sh` invokes the same installer and prompts for the token. The hosted installer requires `/install.sh` to be excluded from interactive Access authentication; keep the dashboard protected and retain per-host authentication on `/api/agent/*`.
 
 The service runs as root because host package management and reboots need privilege. Its code, configuration and installation directory must remain root-owned and unwritable by untrusted users. Compromise of the cloud application, a customer owner/operator account, or the host credential is security-sensitive. The cloud can request any action that the local policy allows; this is not a sandbox against a compromised control plane. Splitting telemetry from a narrowly privileged local executor is a recommended next hardening step before a public production rollout.
 
@@ -86,7 +90,7 @@ npm test
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
-API tests exercise real SQLite queries, signed JWT validation, tenant isolation, role restrictions, cross-origin rejection, command confirmation, dispatch, agent scoping and revocation. Agent tests use mocked execution; tests never reboot or update a machine. Set `TEST_PYTHON` if Python is not available as `python`.
+API tests exercise real SQLite queries, signed JWT validation, tenant isolation, role restrictions, cross-origin rejection, command confirmation, dispatch, agent scoping and revocation. Agent and installer tests use mocked execution and isolated paths; tests never install on the local machine, reboot or update a host. Installer checks cover payload integrity, shell syntax, hidden-token configuration, file permissions, policy preservation and refusal to interrupt a running agent. Set `TEST_PYTHON` if Python is not available as `python`.
 
 `npm run dev` starts Wrangler's local Pages environment. Apply D1 migrations with `--local` first. Authentication remains enforced locally: real Access identity requires a protected hostname. There is no development authentication bypass.
 
