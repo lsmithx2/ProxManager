@@ -1,0 +1,1 @@
+{"name":"proxmox-control","private":true,"type":"module","scripts":{"test":"node --test tests/*.test.mjs","dev":"wrangler pages dev public","deploy":"wrangler pages deploy public"},"devDependencies":{"wrangler":"^4.0.0"}}
